@@ -651,8 +651,25 @@ let pickOptions = [];
 let spinning = false;
 
 function renderPick() {
-  $('#savedNames').innerHTML = state.restaurants.filter((r) => !r.hidden)
-    .map((r) => `<option value="${esc(r.name)}">`).join('');
+  const visible = state.restaurants.filter((r) => !r.hidden);
+  $('#savedNames').innerHTML = visible.map((r) => `<option value="${esc(r.name)}">`).join('');
+
+  // My places as tap-to-toggle chips, most ordered first
+  const stats = computeStats();
+  const q = norm($('#pickMineSearch').value);
+  const chosen = new Set(pickOptions.map(norm));
+  const places = visible
+    .map((r) => ({ r, genres: genresFor(r.name, r.cuisines || [], r.type, r.genres), n: stats.get(r.id)?.count || 0 }))
+    .filter(({ r, genres }) => !q || norm(r.name).includes(q) || genres.some((g) => norm(GENRE_BY_ID[g].label).includes(q)))
+    .sort((a, b) => b.n - a.n || a.r.name.localeCompare(b.r.name));
+  $('#pickMineList').innerHTML = places.map(({ r, genres }) => {
+    const on = chosen.has(norm(r.name));
+    const emoji = genres.length ? GENRE_BY_ID[genres[0]].emoji : '❔';
+    return `<button class="chip ${on ? 'on' : ''}" data-name="${esc(r.name)}"><span class="tick">${on ? '✓' : emoji}</span>${esc(r.name)}</button>`;
+  }).join('') || `<span class="muted small">${visible.length ? 'No places match.' : 'No saved places yet. Save some in Nearby or Mine.'}</span>`;
+
+  $('#pickCount').textContent = pickOptions.length ? `Your choices (${pickOptions.length})` : 'Your choices';
+  $('#pickClear').hidden = !pickOptions.length;
   $('#pickChips').innerHTML = pickOptions.map((o, i) =>
     `<button class="chip" data-i="${i}">${esc(o)}<span class="x">✕</span></button>`).join('') ||
     '<span class="muted small">No choices yet.</span>';
@@ -966,6 +983,23 @@ function wire() {
     if (pickOptions.some((o) => norm(o) === norm(v))) { toast('Already in the list'); return; }
     pickOptions.push(v);
     $('#pickInput').value = '';
+    renderPick();
+  });
+  $('#pickMine').addEventListener('click', (e) => {
+    const c = e.target.closest('button.chip[data-name]');
+    if (!c || spinning) return;
+    const name = c.dataset.name;
+    const i = pickOptions.findIndex((o) => norm(o) === norm(name));
+    if (i >= 0) pickOptions.splice(i, 1);
+    else pickOptions.push(name);
+    $('#pickResult').innerHTML = '';
+    renderPick();
+  });
+  $('#pickMineSearch').addEventListener('input', renderPick);
+  $('#pickClear').addEventListener('click', () => {
+    if (spinning) return;
+    pickOptions = [];
+    $('#pickResult').innerHTML = '';
     renderPick();
   });
   $('#pickChips').addEventListener('click', (e) => {

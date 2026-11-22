@@ -57,12 +57,19 @@
 
     <!-- PICK -->
     <section id="tab-pick" class="tab" hidden>
-      <p class="muted small">Add 2 or more choices (restaurants or dishes), then spin.</p>
+      <p class="muted small">Tap 2 or more of your places (or type your own choices), then spin.</p>
+      <details class="card" id="pickMine" open>
+        <summary>★ Choose from my places</summary>
+        <input id="pickMineSearch" class="field" type="search" placeholder="Filter by name or genre…" autocomplete="off">
+        <div id="pickMineList" class="chips wrap"></div>
+      </details>
       <form id="pickForm" class="row">
-        <input id="pickInput" class="field" list="savedNames" placeholder="e.g. Pickl, Sushi, Shawarma…" autocomplete="off">
+        <input id="pickInput" class="field" list="savedNames" placeholder="Or type a choice: a place or a dish…" autocomplete="off">
         <button class="btn" type="submit">Add</button>
       </form>
       <datalist id="savedNames"></datalist>
+      <div class="row between"><span class="field-label" id="pickCount">Your choices</span>
+        <button id="pickClear" class="btn sm" type="button" hidden>Clear all</button></div>
       <div id="pickChips" class="chips wrap"></div>
       <label class="check"><input type="checkbox" id="pickWeighted"> Favor places I haven't ordered lately</label>
       <button id="spinBtn" class="btn primary big" type="button">🎲 Spin</button>

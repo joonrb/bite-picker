@@ -182,3 +182,10 @@ label.chip:has(input:checked) { background: var(--accent); border-color: var(--a
 label.chip:has(input:focus-visible) { outline: 2px solid var(--accent); outline-offset: 2px; }
 select.field { appearance: auto; }
 .banner .actions { flex-wrap: wrap; }
+
+/* pick: choose from my places */
+.row.between { justify-content: space-between; margin-bottom: 0; }
+.row.between .field-label { margin: 0; }
+#pickMine .field { margin-top: 10px; }
+#pickMineList { max-height: 260px; overflow-y: auto; }
+.chip .tick { margin-right: 4px; }
