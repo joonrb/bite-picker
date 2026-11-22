@@ -804,6 +804,61 @@ function readPlaceFields(f) {
   };
 }
 
+/* ---------- importing Talabat order history (merges, never replaces) ---------- */
+
+/* Find a saved place by name, or create one, matched to the nearest map place of the same name
+   so it gets a location, cuisine and genre. Chains match their closest branch. */
+async function findOrCreatePlace(name, meta) {
+  const n = norm(name);
+  const existing = state.restaurants.find((r) => norm(r.name) === n);
+  if (existing) return { r: existing, created: false };
+  const loc = here || DEFAULT_LOC;
+  const pool = [...osmPlaces, ...(await loadSeed())];
+  let best = null;
+  for (const p of pool) {
+    const pn = norm(p.name);
+    const same = pn === n || (Math.min(pn.length, n.length) >= 4 && (pn.startsWith(n) || n.startsWith(pn)));
+    if (!same) continue;
+    const d = distKm(loc, p);
+    if (!best || d < best.d) best = { p, d };
+  }
+  const p = best?.p;
+  const r = {
+    id: uid(), name, cuisines: p?.cuisines || [], type: p?.type || 'restaurant',
+    lat: p?.lat ?? null, lng: p?.lng ?? null, osmId: p?.osmId || '',
+    talabatUrl: '', notes: '', hidden: false, addedAt: Date.now(),
+  };
+  if (Array.isArray(meta?.genres)) r.genres = meta.genres.filter((g) => GENRE_BY_ID[g]).slice(0, 2);
+  state.restaurants.push(r);
+  return { r, created: true };
+}
+
+async function importOrders(text) {
+  let data;
+  try { data = JSON.parse(String(text).trim()); } catch (_) { data = null; }
+  if (!data || data.type !== 'bite-picker-orders' || !Array.isArray(data.orders)) {
+    return { error: 'That doesn\'t look like an order list. Paste the whole text, starting with {' };
+  }
+  const meta = new Map((data.restaurants || []).map((r) => [norm(r.name), r]));
+  const res = { places: 0, orders: 0, skipped: 0 };
+  for (const o of data.orders) {
+    const at = Date.parse(o.at);
+    if (!o.name || Number.isNaN(at)) { res.skipped++; continue; }
+    const { r, created } = await findOrCreatePlace(String(o.name).trim(), meta.get(norm(o.name)));
+    if (created) res.places++;
+    const tid = o.orderId ? String(o.orderId) : '';
+    const dup = state.orders.some((x) => (tid && x.talabatOrderId === tid) ||
+      (x.restaurantId === r.id && Math.abs(x.at - at) < 30 * 60000));
+    if (dup) { res.skipped++; continue; }
+    const order = { id: uid(), restaurantId: r.id, at };
+    if (tid) order.talabatOrderId = tid;
+    state.orders.push(order);
+    res.orders++;
+  }
+  save();
+  return res;
+}
+
 /* ---------- tabs & wiring ---------- */
 
 let currentTab = 'nearby';
@@ -1049,6 +1104,15 @@ function wire() {
       renderAll();
     } catch (_) { toast('That is not a Bite Picker backup file'); }
     e.target.value = '';
+  });
+  $('#importOrdersBtn').addEventListener('click', async () => {
+    const box = $('#importOrdersText');
+    const res = await importOrders(box.value);
+    if (res.error) { toast(res.error); return; }
+    box.value = '';
+    toast(`Added ${res.orders} order${res.orders === 1 ? '' : 's'} and ${res.places} new place${res.places === 1 ? '' : 's'}` +
+      (res.skipped ? ` (${res.skipped} already there)` : ''));
+    renderAll();
   });
   $('#resetBtn').addEventListener('click', (e) => {
     const btn = e.currentTarget;

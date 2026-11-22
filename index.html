@@ -103,6 +103,10 @@
             <button id="exportBtn" class="btn" type="button">Export backup</button>
             <label class="btn">Import backup<input id="importFile" type="file" accept=".json,application/json" hidden></label>
           </div>
+          <div class="field-label">Import Talabat orders</div>
+          <p class="muted small">Paste an order list here. It's added to your history; nothing is replaced, and orders already there are skipped.</p>
+          <textarea id="importOrdersText" class="field" rows="4" placeholder='{"type":"bite-picker-orders", ...}' autocomplete="off" autocapitalize="off" spellcheck="false"></textarea>
+          <button id="importOrdersBtn" class="btn primary" type="button">Import orders</button>
           <button id="resetBtn" class="btn danger" type="button">Erase all data</button>
         </div>
       </details>
