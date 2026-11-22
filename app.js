@@ -23,15 +23,26 @@ const OVERPASS_ENDPOINTS = [
 /* ---------- storage ---------- */
 
 function blankState() {
-  return { restaurants: [], orders: [], choiceSets: [], settings: { radiusKm: 5 } };
+  return {
+    restaurants: [], orders: [], choiceSets: [],
+    settings: {
+      radiusKm: 5,
+      prefs: { mode: 'any', meal: 'auto', genres: [], quick: false, budget: false, savedOnly: false },
+    },
+  };
+}
+// Fill in any fields missing from older saves or backups.
+function upgradeState(s) {
+  const b = blankState();
+  const settings = { ...b.settings, ...(s.settings || {}) };
+  settings.prefs = { ...b.settings.prefs, ...(settings.prefs || {}) };
+  if (!Array.isArray(settings.prefs.genres)) settings.prefs.genres = [];
+  return { ...b, ...s, settings };
 }
 function loadState() {
   try {
     const s = JSON.parse(localStorage.getItem(STORE_KEY));
-    if (s && Array.isArray(s.restaurants)) {
-      const b = blankState();
-      return { ...b, ...s, settings: { ...b.settings, ...(s.settings || {}) } };
-    }
+    if (s && Array.isArray(s.restaurants)) return upgradeState(s);
   } catch (_) { /* ignore */ }
   return blankState();
 }
@@ -99,34 +110,50 @@ function toast(msg) {
 }
 
 const prettyCuisine = (c) => c.trim().replace(/_/g, ' ').replace(/\b\w/g, (m) => m.toUpperCase());
-const TYPE_LABEL = { restaurant: 'Restaurant', fast_food: 'Fast food', cafe: 'Café' };
 
 /* ---------- stats from order history ---------- */
 
 function computeStats() {
   const map = new Map();
   for (const o of state.orders) {
-    const s = map.get(o.restaurantId) || { count: 0, last: 0, meals: {} };
+    const s = map.get(o.restaurantId) || { count: 0, last: 0, meals: {}, dlvSum: 0, dlvN: 0 };
     s.count++;
     s.last = Math.max(s.last, o.at);
     const m = mealOf(o.at);
     s.meals[m] = (s.meals[m] || 0) + 1;
+    if (o.deliveryMin) { s.dlvSum += o.deliveryMin; s.dlvN++; }
     map.set(o.restaurantId, s);
   }
+  for (const s of map.values()) s.avgDelivery = s.dlvN ? s.dlvSum / s.dlvN : null;
   return map;
 }
 
-function recentCuisines(days = 14) {
-  const cutoff = Date.now() - days * DAY;
-  const byId = new Map(state.restaurants.map((r) => [r.id, r]));
-  const set = new Set();
-  for (const o of state.orders) {
-    if (o.at < cutoff) continue;
-    const r = byId.get(o.restaurantId);
-    (r?.cuisines || []).forEach((c) => set.add(c.toLowerCase()));
-  }
-  return set;
+/* ---------- genres, delivery time, price ---------- */
+
+const genreMemo = new Map();
+function genresFor(name, cuisines, type, manual) {
+  if (Array.isArray(manual) && manual.length) return manual.filter((g) => GENRE_BY_ID[g]);
+  const k = `${name}|${cuisines.join(',')}|${type}`;
+  let g = genreMemo.get(k);
+  if (!g) { g = inferGenres({ name, cuisines, type }); genreMemo.set(k, g); }
+  return g;
 }
+
+function genreTags(genres) {
+  if (!genres.length) return '<span class="gtag unknown">❔ Other</span>';
+  return genres.map((g) => `<span class="gtag">${GENRE_BY_ID[g].emoji} ${esc(GENRE_BY_ID[g].label)}</span>`).join('');
+}
+
+/* Your own delivery time beats your logged average, which beats a rough guess from distance. */
+function deliveryEst(item, stats) {
+  if (item.saved?.deliveryMin) return { min: item.saved.deliveryMin, known: true };
+  const s = item.saved && stats.get(item.saved.id);
+  if (s?.avgDelivery) return { min: Math.round(s.avgDelivery), known: true };
+  if (item.dist != null) return { min: Math.round(15 + item.dist * 3.5), known: false };
+  return null;
+}
+const fmtDelivery = (d) => (d ? `🛵 ~${d.min} min${d.known ? '' : ' (est.)'}` : '');
+const PRICE = ['', '$', '$$', '$$$'];
 
 /* ---------- location ---------- */
 
@@ -257,11 +284,14 @@ function catalog() {
 
 function toItem(osm, saved, loc) {
   const lat = saved?.lat ?? osm?.lat, lng = saved?.lng ?? osm?.lng;
+  const name = saved?.name || osm.name;
+  const cuisines = saved?.cuisines?.length ? saved.cuisines : (osm?.cuisines || []);
+  const type = osm?.type || saved?.type || 'restaurant';
   return {
     key: saved ? saved.id : osm.osmId,
-    name: saved?.name || osm.name,
-    cuisines: saved?.cuisines?.length ? saved.cuisines : (osm?.cuisines || []),
-    type: osm?.type || saved?.type || 'restaurant',
+    name, cuisines, type,
+    genres: genresFor(name, cuisines, type, saved?.genres),
+    price: saved?.price || 0,
     lat, lng,
     dist: lat != null ? distKm(loc, { lat, lng }) : null,
     osm, saved,
@@ -290,10 +320,34 @@ function findItem(key) {
 
 function logOrder(item) {
   const r = ensureSaved(item);
-  state.orders.push({ id: uid(), restaurantId: r.id, at: Date.now() });
+  const order = { id: uid(), restaurantId: r.id, at: Date.now() };
+  state.orders.push(order);
   save();
-  toast(`Logged an order from ${r.name} 🍽️`);
   renderAll();
+  askDeliveryTime(order, r.name);
+}
+
+/* One-tap delivery time after logging an order; this powers "Quick delivery". */
+function askDeliveryTime(order, name) {
+  const b = $('#banner');
+  b.innerHTML = `<div>Logged <b>${esc(name)}</b> 🍽️ How long did delivery take?</div>
+    <div class="actions">
+      <button class="btn sm" data-d="15">Under 20 min</button>
+      <button class="btn sm" data-d="25">20–30</button>
+      <button class="btn sm" data-d="38">30–45</button>
+      <button class="btn sm" data-d="55">45+</button>
+      <button class="btn sm" data-d="skip">Skip</button>
+    </div>`;
+  b.hidden = false;
+  b.onclick = (e) => {
+    const d = e.target.closest('button')?.dataset.d;
+    if (!d) return;
+    b.hidden = true;
+    if (d !== 'skip') {
+      const o = state.orders.find((x) => x.id === order.id);
+      if (o) { o.deliveryMin = Number(d); save(); toast('Delivery time saved'); renderAll(); }
+    }
+  };
 }
 
 async function openTalabat(item) {
@@ -352,15 +406,15 @@ function checkPending() {
 
 function itemHtml(item, stats, opts = {}) {
   const s = item.saved ? stats.get(item.saved.id) : null;
-  const meta = [
-    item.cuisines.slice(0, 3).join(', '),
-    TYPE_LABEL[item.type] || '',
-    fmtKm(item.dist),
-  ].filter(Boolean).join(' · ');
+  const labels = new Set(item.genres.map((g) => norm(GENRE_BY_ID[g].label)));
+  const detail = item.cuisines.filter((c) => !labels.has(norm(c))).slice(0, 2).join(', ');
+  const meta = [detail, fmtKm(item.dist), fmtDelivery(deliveryEst(item, stats)), PRICE[item.price]]
+    .filter(Boolean).join(' · ');
   const badges = (item.saved ? '<span class="badge">★ Saved</span>' : '') +
     (s ? `<span class="badge">${s.count}× ordered</span>` : '<span class="badge new">new to you</span>');
   return `<li class="item" data-key="${esc(item.key)}">
     <div class="name">${esc(item.name)} ${badges}</div>
+    <div class="gtags">${genreTags(item.genres)}</div>
     <div class="meta">${esc(meta) || '&nbsp;'}${s ? ` · last ${ago(s.last)}` : ''}</div>
     <div class="actions">
       <button class="btn primary sm" data-act="talabat">Open Talabat</button>
@@ -387,6 +441,7 @@ function bindItemActions(container) {
 /* ---------- NEARBY tab ---------- */
 
 let nearFilter = 'all';
+let nearGenre = 'any';
 
 function renderNearby() {
   const stats = computeStats();
@@ -396,113 +451,192 @@ function renderNearby() {
   items = items.filter((i) => i.saved || i.dist == null || i.dist <= radius);
   if (nearFilter === 'saved') items = items.filter((i) => i.saved);
   else if (nearFilter === 'new') items = items.filter((i) => !(i.saved && stats.get(i.saved.id)));
-  else if (nearFilter !== 'all') items = items.filter((i) => i.type === nearFilter);
-  if (q) items = items.filter((i) => norm(i.name).includes(q) || i.cuisines.some((c) => norm(c).includes(q)));
+  if (q) {
+    items = items.filter((i) => norm(i.name).includes(q) || i.cuisines.some((c) => norm(c).includes(q)) ||
+      i.genres.some((g) => norm(GENRE_BY_ID[g].label).includes(q)));
+  }
+
+  // genre chips with counts for what's currently in view
+  const counts = {};
+  for (const i of items) {
+    if (!i.genres.length) counts.other = (counts.other || 0) + 1;
+    for (const g of i.genres) counts[g] = (counts[g] || 0) + 1;
+  }
+  if (nearGenre !== 'any' && !counts[nearGenre]) nearGenre = 'any';
+  $('#nearGenres').innerHTML = `<button class="chip ${nearGenre === 'any' ? 'on' : ''}" data-g="any">All genres</button>` +
+    GENRES.filter((g) => counts[g.id]).map((g) =>
+      `<button class="chip ${nearGenre === g.id ? 'on' : ''}" data-g="${g.id}">${g.emoji} ${esc(g.label)} <span class="count">${counts[g.id]}</span></button>`).join('') +
+    (counts.other ? `<button class="chip ${nearGenre === 'other' ? 'on' : ''}" data-g="other">❔ Other <span class="count">${counts.other}</span></button>` : '');
+
+  if (nearGenre === 'other') items = items.filter((i) => !i.genres.length);
+  else if (nearGenre !== 'any') items = items.filter((i) => i.genres.includes(nearGenre));
   items.sort((a, b) => (a.dist ?? 999) - (b.dist ?? 999));
 
   $('#nearStatus').textContent = osmStatus || `${items.length} place${items.length === 1 ? '' : 's'} within ${radius} km`;
-  $('#nearList').innerHTML = items.map((i) => itemHtml(i, stats)).join('') ||
+  $('#nearList').innerHTML = items.slice(0, 150).map((i) => itemHtml(i, stats)).join('') ||
     '<li class="muted small">Nothing matches. Try a bigger radius in Mine → Settings.</li>';
 }
 
 /* ---------- SUGGEST tab ---------- */
 
-let sugMode = 'new';
-let sugCurrent = null;
+const MEALS = ['breakfast', 'lunch', 'dinner', 'late night'];
+const MEAL_LABEL = { breakfast: '🍳 Breakfast', lunch: '🥪 Lunch', dinner: '🍽️ Dinner', 'late night': '🌙 Late night' };
+const MODES = [
+  ['any', '🎯 Anything'],
+  ['new', '✨ New to me'],
+  ['usual', '❤️ My usuals'],
+  ['rediscover', "🔁 Haven't had in a while"],
+];
+const REDISCOVER_DAYS = 21;
+const QUICK_MIN = 30;
+
+let sugCurrent = null; // key of the place on the card
 const sugSkipped = new Set();
 
-function suggestionPool() {
+const prefs = () => state.settings.prefs;
+const activeMeal = () => (prefs().meal === 'auto' ? mealOf(Date.now()) : prefs().meal);
+
+function recentGenres(days = 14) {
+  const cutoff = Date.now() - days * DAY;
+  const byId = new Map(state.restaurants.map((r) => [r.id, r]));
+  const set = new Set();
+  for (const o of state.orders) {
+    if (o.at < cutoff) continue;
+    const r = byId.get(o.restaurantId);
+    if (r) genresFor(r.name, r.cuisines || [], r.type, r.genres).forEach((g) => set.add(g));
+  }
+  return set;
+}
+
+/* Every place that passes your preferences, with a weight for how good a match it is. */
+function scoredPool() {
+  const p = prefs();
   const stats = computeStats();
   const radius = state.settings.radiusKm;
-  const all = catalog().filter((i) => !i.saved?.hidden && !sugSkipped.has(i.key));
-  if (sugMode === 'new') {
-    return all.filter((i) => !(i.saved && stats.get(i.saved.id)) && (i.dist == null || i.dist <= radius));
+  const meal = activeMeal();
+  const explicitMeal = p.meal !== 'auto';
+  const recent = recentGenres();
+  const out = [];
+  for (const i of catalog()) {
+    if (i.saved?.hidden || sugSkipped.has(i.key)) continue;
+    if (i.dist != null && i.dist > radius) continue;
+    const s = i.saved ? stats.get(i.saved.id) : null;
+    const days = s ? (Date.now() - s.last) / DAY : Infinity;
+    if (p.mode === 'new' && s) continue;
+    if (p.mode === 'usual' && !s) continue;
+    if (p.mode === 'rediscover' && (!s || days < REDISCOVER_DAYS)) continue;
+    if (p.genres.length && !i.genres.some((g) => p.genres.includes(g))) continue;
+    if (p.savedOnly && !i.saved) continue;
+    const dlv = deliveryEst(i, stats);
+    if (p.quick && (!dlv || dlv.min > QUICK_MIN)) continue;
+    if (p.budget && !(i.price ? i.price === 1 : i.genres.some((g) => BUDGET_GENRES.has(g)))) continue;
+
+    let w = 1;
+    if (s) {
+      w *= 1 + Math.log2(1 + s.count) * (p.mode === 'usual' ? 1.5 : 1);
+      w *= 1 + 2 * ((s.meals[meal] || 0) / s.count); // you tend to order it at this meal
+      if (days < 1.5) w *= 0.3; // just had it
+      if (p.mode === 'rediscover') w *= Math.min(days, 120) / 30;
+    } else {
+      if (i.saved) w *= 1.5; // saved but never tried
+      if (i.type === 'restaurant') w *= 1.2;
+      if (i.genres.length && !i.genres.some((g) => recent.has(g))) w *= 1.6; // something different
+    }
+    const fit = mealFit(i.genres, meal);
+    w *= explicitMeal ? fit * fit : fit;
+    if (i.dist != null) w *= 1 / (1 + i.dist / 3);
+    if (p.quick && dlv) w *= QUICK_MIN / dlv.min;
+    out.push({ item: i, w, s, dlv, fit });
   }
-  return all.filter((i) => i.saved && stats.get(i.saved.id));
+  return out;
 }
 
-function scoreUsual(item, stats) {
-  const s = stats.get(item.saved.id);
-  const days = (Date.now() - s.last) / DAY;
-  const mealNow = mealOf(Date.now());
-  const mealMatch = (s.meals[mealNow] || 0) / s.count;
-  // frequent + matches this time of day, gently favoring things not eaten in the last day or two
-  return s.count * (1 + mealMatch) * (days < 1.5 ? 0.4 : 1);
-}
-
-function nextSuggestion() {
-  const stats = computeStats();
-  const pool = suggestionPool();
-  if (!pool.length) { sugCurrent = null; return; }
-  if (sugMode === 'new') {
-    const recent = recentCuisines();
-    sugCurrent = weightedPick(pool, (i) => {
-      let w = 1;
-      if (i.type === 'restaurant') w += 0.5;
-      if (i.cuisines.length && !i.cuisines.some((c) => recent.has(c.toLowerCase()))) w += 1.5;
-      if (i.saved) w += 1; // you saved it but never ordered — nudge it
-      if (i.dist != null) w *= 1 / (1 + i.dist / 3);
-      return w;
-    });
-  } else {
-    sugCurrent = weightedPick(pool, (i) => scoreUsual(i, stats) ** 1.5);
-  }
-}
-
-function reasonFor(item, stats) {
-  if (!item) return '';
-  if (sugMode === 'usual') {
-    const s = stats.get(item.saved.id);
-    const top = Object.entries(s.meals).sort((a, b) => b[1] - a[1])[0];
-    return `Ordered ${s.count}×, last ${ago(s.last)}${top ? ` · usually for ${top[0]}` : ''}`;
-  }
+function reasonFor(e, meal, recent) {
   const bits = [];
-  if (item.saved) bits.push('You saved this but never ordered');
-  else bits.push("You haven't tried this");
-  const recent = recentCuisines();
-  if (item.cuisines.length && !item.cuisines.some((c) => recent.has(c.toLowerCase()))) bits.push('a cuisine you haven\'t had lately');
+  const share = e.s ? (e.s.meals[meal] || 0) / e.s.count : 0;
+  if (e.s) bits.push(`Ordered ${e.s.count}×, last ${ago(e.s.last)}`);
+  else bits.push(e.item.saved ? 'Saved but never ordered' : "You haven't tried this");
+  if (e.s && share >= 0.5 && e.s.count >= 2) bits.push(`you often get it for ${meal}`);
+  else if (e.fit >= 1.3) bits.push(`good for ${meal}`);
+  if (!e.s && e.item.genres.length && !e.item.genres.some((g) => recent.has(g))) bits.push("a genre you haven't had lately");
   return bits.join(' · ');
 }
 
+function prefsSummary() {
+  const p = prefs();
+  const parts = [MODES.find((m) => m[0] === p.mode)[1]];
+  parts.push(p.meal === 'auto' ? `${MEAL_LABEL[activeMeal()]} (now)` : MEAL_LABEL[p.meal]);
+  if (p.genres.length) parts.push(p.genres.map((g) => GENRE_BY_ID[g]?.emoji).join(''));
+  if (p.quick) parts.push('⚡');
+  if (p.budget) parts.push('💸');
+  if (p.savedOnly) parts.push('★');
+  return parts.join(' · ');
+}
+
+function renderPrefs() {
+  const p = prefs();
+  $('#prefs').open = state.settings.prefsOpen !== false;
+  const chip = (attr, v, label, on) => `<button class="chip ${on ? 'on' : ''}" ${attr}="${esc(v)}">${label}</button>`;
+  $('#prefSummary').textContent = prefsSummary();
+  $('#prefMode').innerHTML = MODES.map(([v, l]) => chip('data-mode', v, l, p.mode === v)).join('');
+  $('#prefMeal').innerHTML = chip('data-meal', 'auto', `🕒 Now (${activeMeal()})`, p.meal === 'auto') +
+    MEALS.map((m) => chip('data-meal', m, MEAL_LABEL[m], p.meal === m)).join('');
+  $('#prefGenres').innerHTML = chip('data-genre', 'any', 'Any genre', !p.genres.length) +
+    [...GENRES].sort((x, y) => p.genres.includes(y.id) - p.genres.includes(x.id)) // selected first
+      .map((g) => chip('data-genre', g.id, `${g.emoji} ${esc(g.label)}`, p.genres.includes(g.id))).join('');
+  $('#prefToggles').innerHTML =
+    chip('data-toggle', 'quick', `⚡ Quick delivery (≤${QUICK_MIN} min)`, p.quick) +
+    chip('data-toggle', 'budget', '💸 Budget-friendly', p.budget) +
+    chip('data-toggle', 'savedOnly', '★ Saved places only', p.savedOnly);
+}
+
 function renderSuggest() {
-  $$('#sugMode button').forEach((b) => b.classList.toggle('on', b.dataset.m === sugMode));
+  renderPrefs();
   const stats = computeStats();
-  if (sugCurrent && !findItem(sugCurrent.key)) sugCurrent = null;
-  if (!sugCurrent) nextSuggestion();
-  const it = sugCurrent ? findItem(sugCurrent.key) || sugCurrent : null;
+  const meal = activeMeal();
+  const recent = recentGenres();
+  const pool = scoredPool();
+  let cur = sugCurrent && pool.find((e) => e.item.key === sugCurrent);
+  if (!cur && pool.length) {
+    cur = weightedPick(pool, (e) => e.w ** 1.3);
+    sugCurrent = cur.item.key;
+  }
+  if (!cur) sugCurrent = null;
 
-  if (!it) {
-    $('#sugCard').innerHTML = `<div class="hero"><div class="big-name">${sugMode === 'usual' ? 'No usuals yet' : 'Nothing new nearby'}</div>
-      <div class="why">${sugMode === 'usual'
-        ? 'Log orders with “I ordered this” and your favorites will show up here.'
-        : sugSkipped.size ? 'You skipped everything!' : 'Try a bigger radius in Mine → Settings.'}</div>
+  if (!cur) {
+    const p = prefs();
+    const hint = sugSkipped.size ? 'You skipped everything that matches!'
+      : p.mode === 'usual' || p.mode === 'rediscover'
+        ? (state.orders.length ? 'No past orders match these preferences. Try loosening them.' : 'Log orders with “I ordered this” and your usual places will show up here.')
+        : 'Try fewer preferences, or a bigger radius in Mine → Settings.';
+    $('#sugCard').innerHTML = `<div class="hero"><div class="big-name">No match</div>
+      <div class="why">${esc(hint)}</div>
       ${sugSkipped.size ? '<div class="actions"><button class="btn" data-s="reset">Start over</button></div>' : ''}</div>`;
-  } else {
-    const meta = [it.cuisines.slice(0, 3).join(', '), fmtKm(it.dist)].filter(Boolean).join(' · ');
-    $('#sugCard').innerHTML = `<div class="hero" data-key="${esc(it.key)}">
-      <div class="why">${esc(reasonFor(it, stats))}</div>
-      <div class="big-name">${esc(it.name)}</div>
-      <div class="muted">${esc(meta)}</div>
-      <div class="actions">
-        <button class="btn primary" data-s="talabat">Open Talabat</button>
-        <button class="btn" data-s="another">🔄 Another</button>
-      </div>
-      <div class="actions">
-        <button class="btn sm" data-s="ordered">I ordered this</button>
-        <button class="btn sm" data-s="never">🚫 Not for me</button>
-      </div></div>`;
+    $('#sugExtra').innerHTML = '';
+    return;
   }
 
-  if (sugMode === 'usual') {
-    const top = state.restaurants.filter((r) => !r.hidden && stats.get(r.id))
-      .map((r) => findItem(r.id)).filter(Boolean)
-      .sort((a, b) => scoreUsual(b, stats) - scoreUsual(a, stats)).slice(0, 8);
-    $('#sugExtra').innerHTML = top.length
-      ? `<h2>Your top places right now</h2><ul class="list">${top.map((i) => itemHtml(i, stats, { noSave: true })).join('')}</ul>`
-      : '';
-  } else {
-    $('#sugExtra').innerHTML = '';
-  }
+  const it = cur.item;
+  const meta = [fmtKm(it.dist), fmtDelivery(cur.dlv), PRICE[it.price || 0]].filter(Boolean).join(' · ');
+  $('#sugCard').innerHTML = `<div class="hero" data-key="${esc(it.key)}">
+    <div class="why">${esc(reasonFor(cur, meal, recent))}</div>
+    <div class="big-name">${esc(it.name)}</div>
+    <div class="gtags center">${genreTags(it.genres)}</div>
+    <div class="muted small">${esc(meta)}</div>
+    <div class="actions">
+      <button class="btn primary" data-s="talabat">Open Talabat</button>
+      <button class="btn" data-s="another">🔄 Another</button>
+    </div>
+    <div class="actions">
+      <button class="btn sm" data-s="ordered">I ordered this</button>
+      <button class="btn sm" data-s="never">🚫 Not for me</button>
+    </div>
+    <div class="muted tiny">${pool.length} ${pool.length === 1 ? 'place matches' : 'places match'} your preferences</div></div>`;
+
+  const more = pool.filter((e) => e !== cur).sort((a, b) => b.w - a.w).slice(0, 5);
+  $('#sugExtra').innerHTML = more.length
+    ? `<h2>Other good matches</h2><ul class="list">${more.map((e) => itemHtml(e.item, stats, { noSave: true })).join('')}</ul>`
+    : '';
 }
 
 /* ---------- PICK tab ---------- */
@@ -588,23 +722,25 @@ function renderMine() {
   const stats = computeStats();
   const q = norm($('#mineSearch').value);
   const list = state.restaurants
-    .filter((r) => !q || norm(r.name).includes(q) || (r.cuisines || []).some((c) => norm(c).includes(q)))
+    .filter((r) => !q || norm(r.name).includes(q) || (r.cuisines || []).some((c) => norm(c).includes(q)) ||
+      genresFor(r.name, r.cuisines || [], r.type, r.genres).some((g) => norm(GENRE_BY_ID[g].label).includes(q)))
     .sort((a, b) => (stats.get(b.id)?.count || 0) - (stats.get(a.id)?.count || 0) || a.name.localeCompare(b.name));
 
+  const cat = new Map(catalog().map((i) => [i.key, i]));
   $('#mineList').innerHTML = list.map((r) => {
     const s = stats.get(r.id);
-    const meta = [(r.cuisines || []).join(', '), s ? `${s.count}× · last ${ago(s.last)}` : 'never ordered',
-      r.talabatUrl ? '🔗 Talabat link' : 'no Talabat link'].filter(Boolean).join(' · ');
+    const item = cat.get(r.id) || toItem(null, r, here || DEFAULT_LOC);
+    const meta = [s ? `${s.count}× · last ${ago(s.last)}` : 'never ordered', PRICE[r.price || 0],
+      fmtDelivery(deliveryEst(item, stats)), r.talabatUrl ? '🔗 Talabat link' : 'no Talabat link'].filter(Boolean).join(' · ');
     const editing = editingId === r.id;
     return `<li class="item" data-key="${esc(r.id)}" ${r.hidden ? 'style="opacity:.55"' : ''}>
       <div class="name">${esc(r.name)} ${r.hidden ? '<span class="badge new">hidden</span>' : ''}</div>
+      <div class="gtags">${genreTags(item.genres)}${item.genres.length ? '' : ' <span class="muted small">Tap Edit to set a genre</span>'}</div>
       <div class="meta">${esc(meta)}</div>
       ${r.notes ? `<div class="meta">📝 ${esc(r.notes)}</div>` : ''}
       ${editing ? `<form class="edit" data-edit="${esc(r.id)}">
           <input class="field" name="name" value="${esc(r.name)}" required>
-          <input class="field" name="cuisines" value="${esc((r.cuisines || []).join(', '))}" placeholder="Cuisines, comma separated">
-          <input class="field" name="talabatUrl" type="url" value="${esc(r.talabatUrl || '')}" placeholder="Talabat link">
-          <input class="field" name="notes" value="${esc(r.notes || '')}" placeholder="Notes">
+          ${placeFieldsHtml(r, item.genres)}
           <div class="row"><button class="btn primary sm" type="submit">Save</button>
           <button class="btn sm" type="button" data-m="cancel">Cancel</button></div>
         </form>` : `<div class="actions">
@@ -629,6 +765,38 @@ function renderMine() {
 }
 
 const parseCuisines = (s) => String(s || '').split(',').map((c) => c.trim()).filter(Boolean).map(prettyCuisine);
+
+/* Shared fields for the "add place" and "edit place" forms. */
+function placeFieldsHtml(r, genres) {
+  const opt = (v, label) => `<option value="${v}" ${Number(r.price || 0) === v ? 'selected' : ''}>${label}</option>`;
+  return `<div class="field-label">Genre (pick up to 2)</div>
+    <div class="chips wrap genre-pick">${GENRES.map((g) =>
+      `<label class="chip"><input type="checkbox" name="genres" value="${g.id}" ${genres.includes(g.id) ? 'checked' : ''}>${g.emoji} ${esc(g.label)}</label>`).join('')}</div>
+    <input class="field" name="cuisines" value="${esc((r.cuisines || []).join(', '))}" placeholder="Dishes / cuisine details, comma separated">
+    <div class="row">
+      <select class="field" name="price">${opt(0, 'Price: not set')}${opt(1, '$ Cheap')}${opt(2, '$$ Medium')}${opt(3, '$$$ Pricey')}</select>
+      <input class="field" name="deliveryMin" type="number" min="5" max="120" inputmode="numeric" value="${r.deliveryMin || ''}" placeholder="Usual delivery (min)">
+    </div>
+    <input class="field" name="talabatUrl" type="url" value="${esc(r.talabatUrl || '')}" placeholder="Talabat link (Share → Copy link in Talabat)">
+    <input class="field" name="notes" value="${esc(r.notes || '')}" placeholder="Notes (favorite dish…)">`;
+}
+
+/* Read the shared fields back; returns null (after a toast) if something is invalid. */
+function readPlaceFields(f) {
+  const rawUrl = String(f.get('talabatUrl') || '').trim();
+  if (rawUrl && !safeUrl(rawUrl)) { toast("That link doesn't look like a web address"); return null; }
+  const genres = f.getAll('genres').filter((g) => GENRE_BY_ID[g]);
+  if (genres.length > 2) { toast('Pick at most 2 genres'); return null; }
+  const dm = Number(f.get('deliveryMin'));
+  return {
+    genres,
+    cuisines: parseCuisines(f.get('cuisines')),
+    price: Number(f.get('price')) || 0,
+    deliveryMin: dm >= 5 && dm <= 120 ? Math.round(dm) : null,
+    talabatUrl: safeUrl(rawUrl),
+    notes: String(f.get('notes') || '').trim(),
+  };
+}
 
 /* ---------- tabs & wiring ---------- */
 
@@ -670,13 +838,41 @@ function wire() {
     $$('#nearFilters .chip').forEach((x) => x.classList.toggle('on', x === c));
     renderNearby();
   });
+  $('#nearGenres').addEventListener('click', (e) => {
+    const c = e.target.closest('.chip');
+    if (!c) return;
+    nearGenre = c.dataset.g;
+    renderNearby();
+  });
   bindItemActions($('#nearList'));
 
   // Suggest
-  $('#sugMode').addEventListener('click', (e) => {
-    const b = e.target.closest('button');
+  $('#prefs').addEventListener('click', (e) => {
+    const b = e.target.closest('button.chip');
     if (!b) return;
-    sugMode = b.dataset.m;
+    const p = prefs();
+    const d = b.dataset;
+    if (d.mode) p.mode = d.mode;
+    else if (d.meal) p.meal = d.meal;
+    else if (d.genre) {
+      if (d.genre === 'any') p.genres = [];
+      else if (p.genres.includes(d.genre)) p.genres = p.genres.filter((g) => g !== d.genre);
+      else p.genres = [...p.genres, d.genre];
+    } else if (d.toggle) p[d.toggle] = !p[d.toggle];
+    else return;
+    save();
+    sugCurrent = null;
+    sugSkipped.clear();
+    renderSuggest();
+  });
+  $('#prefs').addEventListener('toggle', () => {
+    if (state.settings.prefsOpen === $('#prefs').open) return;
+    state.settings.prefsOpen = $('#prefs').open;
+    save();
+  });
+  $('#prefReset').addEventListener('click', () => {
+    state.settings.prefs = blankState().settings.prefs;
+    save();
     sugCurrent = null;
     sugSkipped.clear();
     renderSuggest();
@@ -685,7 +881,7 @@ function wire() {
     const a = e.target.closest('button')?.dataset.s;
     if (!a) return;
     if (a === 'reset') { sugSkipped.clear(); sugCurrent = null; renderSuggest(); return; }
-    const item = sugCurrent && findItem(sugCurrent.key);
+    const item = sugCurrent && findItem(sugCurrent);
     if (!item) return;
     if (a === 'talabat') openTalabat(item);
     else if (a === 'ordered') { logOrder(item); }
@@ -751,15 +947,15 @@ function wire() {
     const name = String(f.get('name')).trim();
     if (!name) return;
     if (state.restaurants.some((r) => norm(r.name) === norm(name))) { toast('You already saved a place with that name'); return; }
-    const rawUrl = String(f.get('talabatUrl') || '').trim();
-    if (rawUrl && !safeUrl(rawUrl)) { toast('That link doesn\'t look like a web address'); return; }
+    const fields = readPlaceFields(f);
+    if (!fields) return;
     state.restaurants.push({
-      id: uid(), name, cuisines: parseCuisines(f.get('cuisines')), type: 'restaurant',
-      lat: null, lng: null, osmId: '', talabatUrl: safeUrl(rawUrl),
-      notes: String(f.get('notes') || '').trim(), hidden: false, addedAt: Date.now(),
+      id: uid(), name, type: 'restaurant', lat: null, lng: null, osmId: '',
+      hidden: false, addedAt: Date.now(), ...fields,
     });
     save();
     e.target.reset();
+    $('#addFields').innerHTML = placeFieldsHtml({}, []);
     $('#addCard').open = false;
     toast(`Saved ${name}`);
     renderMine();
@@ -796,12 +992,10 @@ function wire() {
     const r = state.restaurants.find((x) => x.id === id);
     if (!r) return;
     const f = new FormData(e.target);
-    const rawUrl = String(f.get('talabatUrl') || '').trim();
-    if (rawUrl && !safeUrl(rawUrl)) { toast('That link doesn\'t look like a web address'); return; }
+    const fields = readPlaceFields(f);
+    if (!fields) return;
     r.name = String(f.get('name')).trim() || r.name;
-    r.cuisines = parseCuisines(f.get('cuisines'));
-    r.talabatUrl = safeUrl(rawUrl);
-    r.notes = String(f.get('notes') || '').trim();
+    Object.assign(r, fields);
     save();
     editingId = null;
     toast('Saved');
@@ -843,8 +1037,7 @@ function wire() {
     try {
       const data = JSON.parse(await f.text());
       if (!Array.isArray(data.restaurants) || !Array.isArray(data.orders)) throw new Error('bad file');
-      const b = blankState();
-      state = { ...b, ...data, settings: { ...b.settings, ...(data.settings || {}) } };
+      state = upgradeState(data);
       save();
       toast(`Imported ${state.restaurants.length} places and ${state.orders.length} orders`);
       renderAll();
@@ -869,6 +1062,7 @@ function wire() {
 /* ---------- boot ---------- */
 
 async function boot() {
+  $('#addFields').innerHTML = placeFieldsHtml({}, []);
   wire();
   showTab('nearby');
   checkPending();

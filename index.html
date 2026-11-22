@@ -25,15 +25,13 @@
   <main>
     <!-- NEARBY -->
     <section id="tab-nearby" class="tab">
-      <input id="nearSearch" class="field" type="search" placeholder="Search name or cuisine…" autocomplete="off">
+      <input id="nearSearch" class="field" type="search" placeholder="Search name, cuisine or genre…" autocomplete="off">
       <div class="chips" id="nearFilters">
-        <button class="chip on" data-f="all">All</button>
-        <button class="chip" data-f="restaurant">Restaurants</button>
-        <button class="chip" data-f="fast_food">Fast food</button>
-        <button class="chip" data-f="cafe">Cafés</button>
+        <button class="chip on" data-f="all">All places</button>
         <button class="chip" data-f="saved">★ Saved</button>
         <button class="chip" data-f="new">Not tried</button>
       </div>
+      <div class="chips" id="nearGenres"></div>
       <p id="nearStatus" class="muted small"></p>
       <ul id="nearList" class="list"></ul>
       <p class="muted tiny">Places from © OpenStreetMap contributors. Shows food places near you; they may not all be on Talabat. Save the ones that are.</p>
@@ -41,10 +39,18 @@
 
     <!-- SUGGEST -->
     <section id="tab-suggest" class="tab" hidden>
-      <div class="seg" id="sugMode">
-        <button class="on" data-m="new">✨ Something new</button>
-        <button data-m="usual">❤️ My usual</button>
-      </div>
+      <details class="card prefs" id="prefs" open>
+        <summary><span>Preferences</span> <span id="prefSummary" class="muted small"></span></summary>
+        <div class="field-label">What kind of place?</div>
+        <div class="chips wrap" id="prefMode"></div>
+        <div class="field-label">Meal</div>
+        <div class="chips wrap" id="prefMeal"></div>
+        <div class="field-label">Genre <span class="muted">(pick any number, swipe for more →)</span></div>
+        <div class="chips" id="prefGenres"></div>
+        <div class="field-label">Also</div>
+        <div class="chips wrap" id="prefToggles"></div>
+        <button id="prefReset" class="btn sm" type="button">Reset preferences</button>
+      </details>
       <div id="sugCard"></div>
       <div id="sugExtra"></div>
     </section>
@@ -77,9 +83,7 @@
         <summary>➕ Add a place manually</summary>
         <form id="addForm" class="stack">
           <input name="name" class="field" placeholder="Restaurant name" required>
-          <input name="cuisines" class="field" placeholder="Cuisine(s), comma separated">
-          <input name="talabatUrl" class="field" type="url" placeholder="Talabat link (Share → Copy link in Talabat)">
-          <input name="notes" class="field" placeholder="Notes (favorite dish…)">
+          <div id="addFields" class="stack"></div>
           <button class="btn primary" type="submit">Save place</button>
         </form>
       </details>
@@ -113,6 +117,7 @@
   </nav>
 
   <div id="toast" class="toast" hidden></div>
+  <script src="genres.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

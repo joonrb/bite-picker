@@ -3,7 +3,9 @@
 A personal phone app (PWA) for deciding what to order on Talabat. Plain HTML/CSS/JS, no build step.
 
 - **Nearby**: food places around you from OpenStreetMap (live, cached 7 days; falls back to `places-seed.json`, a 15 km snapshot around Saadiyat Island).
-- **Suggest**: "Something new" (places you've never ordered from, favoring cuisines you haven't had in 14 days) or "My usual" (ranked by order count and time of day).
+- **Genres**: every place gets up to 2 of 22 genres (`genres.js`): from its OpenStreetMap cuisine tag, then keywords in its name, then a list of known UAE chains, then its type. You can override genres per place in Mine → Edit.
+- **Suggest**: preference-based. Choose place type (anything / new to me / my usuals / haven't had in a while), meal (auto from the clock, or breakfast / lunch / dinner / late night), any number of genres, and quick delivery (≤30 min), budget-friendly, or saved-only. Matches are weighted by your order history, how well the genre fits the meal, novelty and distance.
+- **Delivery time**: after logging an order you can tap how long it took; your average is used for "Quick delivery". Otherwise it's estimated from distance (marked "est.").
 - **Pick**: random spinner over your own choices, optionally weighted toward places you haven't had lately; save choice sets.
 - **Mine**: saved places, Talabat links, order history, settings, backup export/import.
 

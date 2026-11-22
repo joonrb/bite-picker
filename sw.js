@@ -1,6 +1,6 @@
 // Caches the app shell so Bite Picker opens offline. Place data (OpenStreetMap) always goes to the network.
-const CACHE = 'bite-picker-v1';
-const SHELL = ['./', 'index.html', 'styles.css', 'app.js', 'manifest.json',
+const CACHE = 'bite-picker-v2';
+const SHELL = ['./', 'index.html', 'styles.css', 'app.js', 'genres.js', 'manifest.json',
   'places-seed.json', 'icons/icon-192.png', 'icons/icon-512.png', 'icons/apple-touch-icon.png'];
 
 self.addEventListener('install', (e) => {
