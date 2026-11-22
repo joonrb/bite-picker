@@ -26,7 +26,8 @@ function blankState() {
   return {
     restaurants: [], orders: [], choiceSets: [],
     settings: {
-      radiusKm: 5,
+      radiusKm: 10,
+      radiusDoubled: true,
       prefs: { mode: 'any', meal: 'auto', genres: [], quick: false, budget: false, savedOnly: false },
     },
   };
@@ -35,6 +36,11 @@ function blankState() {
 function upgradeState(s) {
   const b = blankState();
   const settings = { ...b.settings, ...(s.settings || {}) };
+  // One-time upgrade: the search radius was doubled (old default 5 km -> 10 km, max 15 -> 30 km).
+  if (s.settings && !s.settings.radiusDoubled) {
+    settings.radiusKm = Math.min((Number(s.settings.radiusKm) || 5) * 2, 30);
+    settings.radiusDoubled = true;
+  }
   settings.prefs = { ...b.settings.prefs, ...(settings.prefs || {}) };
   if (!Array.isArray(settings.prefs.genres)) settings.prefs.genres = [];
   return { ...b, ...s, settings };
@@ -1062,6 +1068,7 @@ function wire() {
 /* ---------- boot ---------- */
 
 async function boot() {
+  save(); // persist any one-time upgrades from loadState()
   $('#addFields').innerHTML = placeFieldsHtml({}, []);
   wire();
   showTab('nearby');
