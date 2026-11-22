@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#1f9d74">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="Bite Picker">
+  <title>Bite Picker</title>
+  <link rel="manifest" href="manifest.json">
+  <link rel="icon" href="icons/icon-192.png">
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <h1 id="title">Nearby</h1>
+    <button id="locBtn" class="loc" type="button" title="Refresh location">📍 <span id="locLabel">Locating…</span></button>
+  </header>
+
+  <div id="banner" class="banner" hidden></div>
+
+  <main>
+    <!-- NEARBY -->
+    <section id="tab-nearby" class="tab">
+      <input id="nearSearch" class="field" type="search" placeholder="Search name or cuisine…" autocomplete="off">
+      <div class="chips" id="nearFilters">
+        <button class="chip on" data-f="all">All</button>
+        <button class="chip" data-f="restaurant">Restaurants</button>
+        <button class="chip" data-f="fast_food">Fast food</button>
+        <button class="chip" data-f="cafe">Cafés</button>
+        <button class="chip" data-f="saved">★ Saved</button>
+        <button class="chip" data-f="new">Not tried</button>
+      </div>
+      <p id="nearStatus" class="muted small"></p>
+      <ul id="nearList" class="list"></ul>
+      <p class="muted tiny">Places from © OpenStreetMap contributors. Shows food places near you; they may not all be on Talabat. Save the ones that are.</p>
+    </section>
+
+    <!-- SUGGEST -->
+    <section id="tab-suggest" class="tab" hidden>
+      <div class="seg" id="sugMode">
+        <button class="on" data-m="new">✨ Something new</button>
+        <button data-m="usual">❤️ My usual</button>
+      </div>
+      <div id="sugCard"></div>
+      <div id="sugExtra"></div>
+    </section>
+
+    <!-- PICK -->
+    <section id="tab-pick" class="tab" hidden>
+      <p class="muted small">Add 2 or more choices (restaurants or dishes), then spin.</p>
+      <form id="pickForm" class="row">
+        <input id="pickInput" class="field" list="savedNames" placeholder="e.g. Pickl, Sushi, Shawarma…" autocomplete="off">
+        <button class="btn" type="submit">Add</button>
+      </form>
+      <datalist id="savedNames"></datalist>
+      <div id="pickChips" class="chips wrap"></div>
+      <label class="check"><input type="checkbox" id="pickWeighted"> Favor places I haven't ordered lately</label>
+      <button id="spinBtn" class="btn primary big" type="button">🎲 Spin</button>
+      <div id="pickResult"></div>
+      <details class="card">
+        <summary>Saved choice sets</summary>
+        <div class="row">
+          <input id="setName" class="field" placeholder="Set name, e.g. Friday lunch">
+          <button id="saveSet" class="btn" type="button">Save current</button>
+        </div>
+        <ul id="setList" class="list compact"></ul>
+      </details>
+    </section>
+
+    <!-- MINE -->
+    <section id="tab-mine" class="tab" hidden>
+      <details class="card" id="addCard">
+        <summary>➕ Add a place manually</summary>
+        <form id="addForm" class="stack">
+          <input name="name" class="field" placeholder="Restaurant name" required>
+          <input name="cuisines" class="field" placeholder="Cuisine(s), comma separated">
+          <input name="talabatUrl" class="field" type="url" placeholder="Talabat link (Share → Copy link in Talabat)">
+          <input name="notes" class="field" placeholder="Notes (favorite dish…)">
+          <button class="btn primary" type="submit">Save place</button>
+        </form>
+      </details>
+      <h2>My places</h2>
+      <input id="mineSearch" class="field" type="search" placeholder="Filter my places…" autocomplete="off">
+      <ul id="mineList" class="list"></ul>
+      <h2>Order history</h2>
+      <ul id="historyList" class="list compact"></ul>
+      <details class="card">
+        <summary>⚙️ Settings &amp; backup</summary>
+        <div class="stack">
+          <label>Search radius: <b id="radiusVal"></b> km
+            <input id="radius" type="range" min="1" max="15" step="1">
+          </label>
+          <p class="muted small">Your data lives only on this phone. Export a backup now and then.</p>
+          <div class="row">
+            <button id="exportBtn" class="btn" type="button">Export backup</button>
+            <label class="btn">Import backup<input id="importFile" type="file" accept=".json,application/json" hidden></label>
+          </div>
+          <button id="resetBtn" class="btn danger" type="button">Erase all data</button>
+        </div>
+      </details>
+    </section>
+  </main>
+
+  <nav class="tabbar">
+    <button data-tab="nearby" class="on"><span>📍</span>Nearby</button>
+    <button data-tab="suggest"><span>✨</span>Suggest</button>
+    <button data-tab="pick"><span>🎲</span>Pick</button>
+    <button data-tab="mine"><span>★</span>Mine</button>
+  </nav>
+
+  <div id="toast" class="toast" hidden></div>
+  <script src="app.js"></script>
+</body>
+</html>
